@@ -276,17 +276,19 @@ agentlife.init()          ← auto-patches OpenAI client (monkey-patch)
 - [x] OpenAI auto-patcher (sync + async)
 - [x] `@trace` decorator with nested span tree
 - [x] Web dashboard with call tree + detail panel
-- [x] Token & cost tracking (10+ models)
-- [x] CLI (`ui`, `sessions`, `clear`)
-- [x] **N-Sample group comparison with diagnostics** ← NEW
-- [x] **Aggregate statistics (mean/std/min/max)** ← NEW
-- [x] **Auto-diagnostics (errors, outliers, inconsistency)** ← NEW
-- [ ] Streaming response support
+- [x] Token & cost tracking (25+ models)
+- [x] CLI (`ui`, `sessions`, `clear`, `export`)
+- [x] N-Sample group comparison with diagnostics
+- [x] Aggregate statistics (mean/std/min/max)
+- [x] Auto-diagnostics (errors, outliers, inconsistency)
+- [x] Streaming response support (`stream=True`)
+- [x] Export sessions as JSON (`agentlife export`)
 - [ ] MCP tool call tracing
-- [ ] Export sessions as JSON / CSV
+- [ ] CSV export
 - [ ] pytest plugin for agent regression testing
 - [ ] Cost analytics dashboard (by model / by day)
 - [ ] LangChain / LlamaIndex native integration
+- [ ] Anthropic SDK native patcher
 - [ ] Session replay mode
 
 ## Examples
