@@ -12,7 +12,8 @@ from agentlife.store import Store
 
 _current_session: ContextVar[Session | None] = ContextVar("_current_session", default=None)
 _current_span: ContextVar[Span | None] = ContextVar("_current_span", default=None)
-_current_group: ContextVar[str | None] = ContextVar("_current_group", default=None)
+# (group_id, group_name)
+_current_group: ContextVar[tuple[str, str] | None] = ContextVar("_current_group", default=None)
 
 
 def _run_sync(coro: Any) -> None:
@@ -51,6 +52,7 @@ class Collector:
 
     def __init__(self, store: Store | None = None):
         self.store = store or Store()
+        self._span_parents: dict[str, Span | None] = {}
 
     @classmethod
     def get(cls) -> Collector:
@@ -75,13 +77,17 @@ class Collector:
         name: str = "unnamed",
         metadata: dict | None = None,
         group_id: str | None = None,
+        group_name: str | None = None,
         sample_index: int | None = None,
     ) -> Session:
-        gid = group_id or _current_group.get()
+        grp = _current_group.get()
+        gid = group_id or (grp[0] if grp else None)
+        gname = group_name or (grp[1] if grp else None)
         session = Session(
             name=name,
             metadata=metadata or {},
             group_id=gid,
+            group_name=gname,
             sample_index=sample_index,
         )
         _current_session.set(session)
@@ -89,11 +95,14 @@ class Collector:
         return session
 
     @staticmethod
-    def set_group(group_id: str | None) -> None:
-        _current_group.set(group_id)
+    def set_group(group_id: str | None, group_name: str | None = None) -> None:
+        if group_id is None:
+            _current_group.set(None)
+        else:
+            _current_group.set((group_id, group_name or group_id))
 
     @staticmethod
-    def get_current_group() -> str | None:
+    def get_current_group() -> tuple[str, str] | None:
         return _current_group.get()
 
     def end_session(self, session: Session, error: str | None = None) -> None:
@@ -134,6 +143,7 @@ class Collector:
             model=model,
             metadata=metadata or {},
         )
+        self._span_parents[span.id] = parent
         _current_span.set(span)
         return span
 
@@ -164,7 +174,6 @@ class Collector:
             span.total_tokens = span.prompt_tokens + span.completion_tokens
             span.cost = estimate_cost(span.model, span.prompt_tokens, span.completion_tokens)
 
-        # Update session aggregates
         session = _current_session.get()
         if session:
             session.span_count += 1
@@ -175,10 +184,9 @@ class Collector:
 
         self._save_span(span)
 
-        # Restore parent span
-        parent_id = span.parent_span_id
-        if parent_id is None:
-            _current_span.set(None)
+        # Restore parent span (fixes nested span tree breakage)
+        parent = self._span_parents.pop(span.id, None)
+        _current_span.set(parent)
 
     @staticmethod
     def get_current_span() -> Span | None:

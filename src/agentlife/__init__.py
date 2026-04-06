@@ -51,7 +51,7 @@ def group(name: str, metadata: dict | None = None):
     """
     group_id = f"g-{uuid.uuid4().hex[:10]}"
     collector = Collector.get()
-    collector.set_group(group_id)
+    collector.set_group(group_id, name)
     try:
         yield group_id
     finally:

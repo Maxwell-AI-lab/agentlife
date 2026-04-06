@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     group_id TEXT,
+    group_name TEXT,
     sample_index INTEGER,
     status TEXT NOT NULL DEFAULT 'running',
     started_at TEXT NOT NULL,
@@ -59,7 +61,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_group ON sessions(group_id);
 _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN group_id TEXT",
     "ALTER TABLE sessions ADD COLUMN sample_index INTEGER",
+    "ALTER TABLE sessions ADD COLUMN group_name TEXT",
 ]
+
+_schema_initialized: set[str] = set()
 
 
 class Store:
@@ -70,13 +75,16 @@ class Store:
     async def _get_db(self) -> aiosqlite.Connection:
         db = await aiosqlite.connect(self.db_path)
         db.row_factory = aiosqlite.Row
-        await db.executescript(_SCHEMA)
-        for sql in _MIGRATIONS:
-            try:
-                await db.execute(sql)
-                await db.commit()
-            except Exception:
-                pass
+        if self.db_path not in _schema_initialized:
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.executescript(_SCHEMA)
+            for sql in _MIGRATIONS:
+                try:
+                    await db.execute(sql)
+                    await db.commit()
+                except Exception:
+                    pass
+            _schema_initialized.add(self.db_path)
         return db
 
     # ── Sessions ──
@@ -86,13 +94,14 @@ class Store:
         try:
             await db.execute(
                 """INSERT OR REPLACE INTO sessions
-                   (id, name, group_id, sample_index, status, started_at, ended_at,
+                   (id, name, group_id, group_name, sample_index, status,
+                    started_at, ended_at,
                     total_tokens, total_cost, total_duration_ms,
                     span_count, error_count, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session.id, session.name,
-                    session.group_id, session.sample_index,
+                    session.group_id, session.group_name, session.sample_index,
                     session.status.value,
                     session.started_at, session.ended_at,
                     session.total_tokens, session.total_cost,
@@ -189,6 +198,7 @@ class Store:
         try:
             cursor = await db.execute(
                 """SELECT group_id,
+                          MAX(group_name) as group_name,
                           COUNT(*) as n_samples,
                           SUM(total_tokens) as sum_tokens,
                           AVG(total_tokens) as avg_tokens,
@@ -230,6 +240,8 @@ class Store:
         sessions = await self.get_group_sessions(group_id)
         if not sessions:
             return {"error": "no sessions in group"}
+
+        group_name = sessions[0].group_name or group_id
 
         samples = []
         for s in sessions:
@@ -277,64 +289,11 @@ class Store:
                 "std": round(statistics.stdev(vals), 2) if n > 1 else 0,
             }
 
-        diagnostics = []
-        error_samples = [s for s in samples if s["status"] == "error"]
-        if error_samples:
-            diagnostics.append({
-                "type": "error", "severity": "high",
-                "message": f"{len(error_samples)}/{len(samples)} 次采样失败（session 级别错误）",
-                "samples": [s["sample_index"] for s in error_samples],
-            })
-
-        span_error_samples = [s for s in samples if s["error_count"] > 0 and s["status"] != "error"]
-        if span_error_samples:
-            diagnostics.append({
-                "type": "span_errors", "severity": "high",
-                "message": f"{len(span_error_samples)}/{len(samples)} 次采样包含 span 级别错误（异常被捕获但已记录）",
-                "samples": [s["sample_index"] for s in span_error_samples],
-            })
-
-        zero_token_samples = [s for s in samples if s["total_tokens"] == 0]
-        if zero_token_samples and len(zero_token_samples) < len(samples):
-            diagnostics.append({
-                "type": "no_output", "severity": "medium",
-                "message": f"{len(zero_token_samples)}/{len(samples)} 次采样 token 为 0（可能 API 调用失败）",
-                "samples": [s["sample_index"] for s in zero_token_samples],
-            })
-
-        if tokens_list and max(tokens_list) > 0:
-            mean_tok = sum(tokens_list) / len(tokens_list)
-            for s in samples:
-                if mean_tok > 0 and s["total_tokens"] > mean_tok * 2:
-                    diagnostics.append({
-                        "type": "token_outlier", "severity": "medium",
-                        "message": f"Sample {s['sample_index']} token 用量异常偏高 ({s['total_tokens']} vs 均值 {mean_tok:.0f})",
-                        "samples": [s["sample_index"]],
-                    })
-
-        if dur_list and max(dur_list) > 0:
-            mean_dur = sum(dur_list) / len(dur_list)
-            for s in samples:
-                if mean_dur > 0 and s["total_duration_ms"] > mean_dur * 2:
-                    diagnostics.append({
-                        "type": "slow_outlier", "severity": "medium",
-                        "message": f"Sample {s['sample_index']} 耗时异常偏高 ({s['total_duration_ms']:.0f}ms vs 均值 {mean_dur:.0f}ms)",
-                        "samples": [s["sample_index"]],
-                    })
-
-        ok_samples = [s for s in samples if s["status"] == "ok"]
-        if len(ok_samples) >= 2:
-            outputs = [str(s.get("final_output", "")) for s in ok_samples]
-            unique_outputs = len(set(outputs))
-            if unique_outputs > 1:
-                diagnostics.append({
-                    "type": "inconsistent", "severity": "info",
-                    "message": f"{unique_outputs} 种不同的最终输出（共 {len(ok_samples)} 次成功采样）",
-                    "samples": list(range(len(ok_samples))),
-                })
+        diagnostics = _build_diagnostics(samples, tokens_list, dur_list)
 
         return {
             "group_id": group_id,
+            "group_name": group_name,
             "n_samples": len(samples),
             "samples": samples,
             "aggregate": {
@@ -344,6 +303,19 @@ class Store:
                 "llm_calls": _stats(steps_list),
             },
             "diagnostics": diagnostics,
+        }
+
+    # ── Export ──
+
+    async def export_session(self, session_id: str) -> dict | None:
+        """Export a session with all its spans as a JSON-serializable dict."""
+        session = await self.get_session(session_id)
+        if session is None:
+            return None
+        spans = await self.get_spans(session_id)
+        return {
+            "session": session.model_dump(),
+            "spans": [s.model_dump() for s in spans],
         }
 
     # ── Helpers ──
@@ -361,6 +333,71 @@ class Store:
         d["input_data"] = _json_parse(d.get("input_data"))
         d["output_data"] = _json_parse(d.get("output_data"))
         return Span(**d)
+
+
+def _build_diagnostics(
+    samples: list[dict[str, Any]],
+    tokens_list: list[int],
+    dur_list: list[float],
+) -> list[dict]:
+    diagnostics: list[dict] = []
+
+    error_samples = [s for s in samples if s["status"] == "error"]
+    if error_samples:
+        diagnostics.append({
+            "type": "error", "severity": "high",
+            "message": f"{len(error_samples)}/{len(samples)} 次采样失败（session 级别错误）",
+            "samples": [s["sample_index"] for s in error_samples],
+        })
+
+    span_error_samples = [s for s in samples if s["error_count"] > 0 and s["status"] != "error"]
+    if span_error_samples:
+        diagnostics.append({
+            "type": "span_errors", "severity": "high",
+            "message": f"{len(span_error_samples)}/{len(samples)} 次采样包含 span 级别错误（异常被捕获但已记录）",
+            "samples": [s["sample_index"] for s in span_error_samples],
+        })
+
+    zero_token_samples = [s for s in samples if s["total_tokens"] == 0]
+    if zero_token_samples and len(zero_token_samples) < len(samples):
+        diagnostics.append({
+            "type": "no_output", "severity": "medium",
+            "message": f"{len(zero_token_samples)}/{len(samples)} 次采样 token 为 0（可能 API 调用失败）",
+            "samples": [s["sample_index"] for s in zero_token_samples],
+        })
+
+    if tokens_list and max(tokens_list) > 0:
+        mean_tok = sum(tokens_list) / len(tokens_list)
+        for s in samples:
+            if mean_tok > 0 and s["total_tokens"] > mean_tok * 2:
+                diagnostics.append({
+                    "type": "token_outlier", "severity": "medium",
+                    "message": f"Sample {s['sample_index']} token 用量异常偏高 ({s['total_tokens']} vs 均值 {mean_tok:.0f})",
+                    "samples": [s["sample_index"]],
+                })
+
+    if dur_list and max(dur_list) > 0:
+        mean_dur = sum(dur_list) / len(dur_list)
+        for s in samples:
+            if mean_dur > 0 and s["total_duration_ms"] > mean_dur * 2:
+                diagnostics.append({
+                    "type": "slow_outlier", "severity": "medium",
+                    "message": f"Sample {s['sample_index']} 耗时异常偏高 ({s['total_duration_ms']:.0f}ms vs 均值 {mean_dur:.0f}ms)",
+                    "samples": [s["sample_index"]],
+                })
+
+    ok_samples = [s for s in samples if s["status"] == "ok"]
+    if len(ok_samples) >= 2:
+        outputs = [str(s.get("final_output", "")) for s in ok_samples]
+        unique_outputs = len(set(outputs))
+        if unique_outputs > 1:
+            diagnostics.append({
+                "type": "inconsistent", "severity": "info",
+                "message": f"{unique_outputs} 种不同的最终输出（共 {len(ok_samples)} 次成功采样）",
+                "samples": list(range(len(ok_samples))),
+            })
+
+    return diagnostics
 
 
 def _json_safe(value: object) -> str | None:

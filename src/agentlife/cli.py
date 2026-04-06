@@ -76,6 +76,33 @@ def sessions(limit: int):
 
 
 @cli.command()
+@click.argument("session_id")
+@click.option("--output", "-o", default=None, help="Output file (default: stdout)")
+def export(session_id: str, output: str | None):
+    """Export a session with all spans as JSON."""
+    import asyncio
+    import json as _json
+    from agentlife.store import Store
+
+    async def _export():
+        return await Store().export_session(session_id)
+
+    data = asyncio.run(_export())
+    if data is None:
+        console.print(f"[red]Session '{session_id}' not found.[/]")
+        raise SystemExit(1)
+
+    json_str = _json.dumps(data, ensure_ascii=False, indent=2, default=str)
+
+    if output:
+        with open(output, "w") as f:
+            f.write(json_str)
+        console.print(f"[green]Exported to {output}[/]")
+    else:
+        click.echo(json_str)
+
+
+@cli.command()
 @click.confirmation_option(prompt="Delete ALL trace data?")
 def clear():
     """Delete all stored sessions and spans."""

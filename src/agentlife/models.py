@@ -53,6 +53,7 @@ class Session(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     name: str = "unnamed"
     group_id: str | None = None
+    group_name: str | None = None
     sample_index: int | None = None
     status: SpanStatus = SpanStatus.RUNNING
     started_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -69,17 +70,39 @@ class Session(BaseModel):
 
 # Token cost per million tokens (input / output) for common models
 MODEL_COSTS: dict[str, tuple[float, float]] = {
+    # OpenAI
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4-turbo": (10.00, 30.00),
     "gpt-4": (30.00, 60.00),
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1-nano": (0.10, 0.40),
     "gpt-3.5-turbo": (0.50, 1.50),
+    "o1": (15.00, 60.00),
+    "o1-mini": (1.10, 4.40),
+    "o3-mini": (1.10, 4.40),
+    # Anthropic
+    "claude-4-opus": (15.00, 75.00),
+    "claude-4-sonnet": (3.00, 15.00),
     "claude-3-5-sonnet": (3.00, 15.00),
     "claude-3-5-haiku": (0.80, 4.00),
     "claude-3-opus": (15.00, 75.00),
-    "claude-4-sonnet": (3.00, 15.00),
+    # DeepSeek
     "deepseek-chat": (0.14, 0.28),
+    "deepseek-reasoner": (0.55, 2.19),
+    # GLM (Zhipu AI)
+    "glm-4-flash": (0.00, 0.00),
+    "glm-4-air": (0.50, 0.50),
+    "glm-4-plus": (5.00, 5.00),
     "glm-4": (1.00, 1.00),
+    # Qwen (Alibaba)
+    "qwen-turbo": (0.30, 0.60),
+    "qwen-plus": (0.80, 2.00),
+    "qwen-max": (2.40, 9.60),
+    # Doubao (ByteDance)
+    "doubao-pro": (0.80, 2.00),
+    "doubao-lite": (0.30, 0.60),
 }
 
 
