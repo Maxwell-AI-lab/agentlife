@@ -52,6 +52,8 @@ class Span(BaseModel):
 class Session(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     name: str = "unnamed"
+    group_id: str | None = None
+    sample_index: int | None = None
     status: SpanStatus = SpanStatus.RUNNING
     started_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     ended_at: str | None = None

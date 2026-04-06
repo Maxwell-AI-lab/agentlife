@@ -1,10 +1,8 @@
-"""Central trace collector — manages sessions, spans, and async persistence."""
+"""Central trace collector — manages sessions, spans, and sync persistence."""
 
 from __future__ import annotations
 
 import asyncio
-import threading
-import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
@@ -14,19 +12,45 @@ from agentlife.store import Store
 
 _current_session: ContextVar[Session | None] = ContextVar("_current_session", default=None)
 _current_span: ContextVar[Span | None] = ContextVar("_current_span", default=None)
+_current_group: ContextVar[str | None] = ContextVar("_current_group", default=None)
+
+
+def _run_sync(coro: Any) -> None:
+    """Run an async coroutine synchronously, handling existing event loops."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import threading
+
+        result = None
+        exc = None
+
+        def _target():
+            nonlocal result, exc
+            try:
+                result = asyncio.run(coro)
+            except Exception as e:
+                exc = e
+
+        t = threading.Thread(target=_target)
+        t.start()
+        t.join(timeout=10)
+        if exc:
+            raise exc
+    else:
+        asyncio.run(coro)
 
 
 class Collector:
-    """Singleton that buffers trace data and flushes to SQLite."""
+    """Singleton that collects trace data and persists to SQLite."""
 
     _instance: Collector | None = None
 
     def __init__(self, store: Store | None = None):
         self.store = store or Store()
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread: threading.Thread | None = None
-        self._queue: list[tuple[str, Any]] = []
-        self._lock = threading.Lock()
 
     @classmethod
     def get(cls) -> Collector:
@@ -38,27 +62,39 @@ class Collector:
     def reset(cls) -> None:
         cls._instance = None
 
-    # ── Background event loop ──
+    def _save_session(self, session: Session) -> None:
+        _run_sync(self.store.save_session(session))
 
-    def _ensure_loop(self) -> None:
-        if self._loop is not None and self._loop.is_running():
-            return
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
-        self._thread.start()
-
-    def _submit(self, coro: Any) -> None:
-        self._ensure_loop()
-        assert self._loop is not None
-        asyncio.run_coroutine_threadsafe(coro, self._loop)
+    def _save_span(self, span: Span) -> None:
+        _run_sync(self.store.save_span(span))
 
     # ── Session lifecycle ──
 
-    def start_session(self, name: str = "unnamed", metadata: dict | None = None) -> Session:
-        session = Session(name=name, metadata=metadata or {})
+    def start_session(
+        self,
+        name: str = "unnamed",
+        metadata: dict | None = None,
+        group_id: str | None = None,
+        sample_index: int | None = None,
+    ) -> Session:
+        gid = group_id or _current_group.get()
+        session = Session(
+            name=name,
+            metadata=metadata or {},
+            group_id=gid,
+            sample_index=sample_index,
+        )
         _current_session.set(session)
-        self._submit(self.store.save_session(session))
+        self._save_session(session)
         return session
+
+    @staticmethod
+    def set_group(group_id: str | None) -> None:
+        _current_group.set(group_id)
+
+    @staticmethod
+    def get_current_group() -> str | None:
+        return _current_group.get()
 
     def end_session(self, session: Session, error: str | None = None) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -67,7 +103,7 @@ class Collector:
         if session.started_at:
             start = datetime.fromisoformat(session.started_at)
             session.total_duration_ms = (datetime.now(timezone.utc) - start).total_seconds() * 1000
-        self._submit(self.store.save_session(session))
+        self._save_session(session)
         _current_session.set(None)
 
     @staticmethod
@@ -137,13 +173,12 @@ class Collector:
             if error:
                 session.error_count += 1
 
-        self._submit(self.store.save_span(span))
+        self._save_span(span)
 
         # Restore parent span
         parent_id = span.parent_span_id
         if parent_id is None:
             _current_span.set(None)
-        # Keep parent reference (it was set before this span)
 
     @staticmethod
     def get_current_span() -> Span | None:

@@ -59,6 +59,29 @@ async def get_spans(session_id: str):
     return {"spans": [s.model_dump() for s in spans]}
 
 
+# ── Groups ──
+
+
+@router.get("/groups")
+async def list_groups(limit: int = Query(50, ge=1, le=200)):
+    groups = await _get_store().list_groups(limit=limit)
+    return {"groups": groups}
+
+
+@router.get("/groups/{group_id}/stats")
+async def get_group_stats(group_id: str):
+    stats = await _get_store().get_group_stats(group_id)
+    if "error" in stats:
+        raise HTTPException(status_code=404, detail=stats["error"])
+    return stats
+
+
+@router.get("/groups/{group_id}/sessions")
+async def get_group_sessions(group_id: str):
+    sessions = await _get_store().get_group_sessions(group_id)
+    return {"sessions": [s.model_dump() for s in sessions]}
+
+
 # ── Health ──
 
 

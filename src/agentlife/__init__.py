@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import uuid
 from contextlib import contextmanager
 from typing import Any, Callable, TypeVar
 
@@ -11,7 +12,7 @@ from agentlife.collector import Collector
 from agentlife.models import SpanType
 
 __version__ = "0.1.0"
-__all__ = ["init", "session", "trace"]
+__all__ = ["init", "session", "group", "trace"]
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -38,7 +39,32 @@ def init(*, patch_openai: bool = True) -> None:
 
 
 @contextmanager
-def session(name: str = "unnamed", metadata: dict | None = None):
+def group(name: str, metadata: dict | None = None):
+    """Context manager that groups multiple rollout samples together.
+
+    Usage::
+
+        with agentlife.group("batch-001"):
+            for i in range(4):
+                with agentlife.session(f"sample-{i}", sample_index=i):
+                    result = agent.run(task)
+    """
+    group_id = f"g-{uuid.uuid4().hex[:10]}"
+    collector = Collector.get()
+    collector.set_group(group_id)
+    try:
+        yield group_id
+    finally:
+        collector.set_group(None)
+
+
+@contextmanager
+def session(
+    name: str = "unnamed",
+    metadata: dict | None = None,
+    group_id: str | None = None,
+    sample_index: int | None = None,
+):
     """Context manager that wraps an agent run as a traced session.
 
     Usage::
@@ -50,7 +76,10 @@ def session(name: str = "unnamed", metadata: dict | None = None):
             # ... your agent code ...
     """
     collector = Collector.get()
-    sess = collector.start_session(name=name, metadata=metadata)
+    sess = collector.start_session(
+        name=name, metadata=metadata,
+        group_id=group_id, sample_index=sample_index,
+    )
     try:
         yield sess
         collector.end_session(sess)

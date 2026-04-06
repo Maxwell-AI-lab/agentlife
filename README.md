@@ -9,112 +9,144 @@
 [![PyPI version](https://img.shields.io/pypi/v/agentlife?color=%2334D399&style=flat-square)](https://pypi.org/project/agentlife/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/user/agentlife?style=flat-square)](https://github.com/Maxwell-AI-lab/agentlife)
+[![GitHub stars](https://img.shields.io/github/stars/Maxwell-AI-lab/agentlife?style=flat-square)](https://github.com/Maxwell-AI-lab/agentlife)
 
-[Documentation](https://github.com/Maxwell-AI-lab/agentlife#quick-start) · [Examples](./examples) · [Roadmap](#roadmap) · [Contributing](CONTRIBUTING.md)
+[Quick Start](#quick-start) · [Who Is This For](#who-is-this-for) · [Examples](./examples) · [Roadmap](#roadmap) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
 ---
 
-<div align="center">
-<br/>
-<img src="assets/dashboard.png" alt="AgentLife Dashboard" width="90%"/>
-<br/>
-<sub>The AgentLife dashboard — session list, nested call tree, and span detail with token/cost tracking.</sub>
-<br/><br/>
-</div>
-
 ## The Problem
 
 You build an AI agent. It calls LLMs, uses tools, runs multi-step reasoning. Then something goes wrong:
 
-- 🤷 **"Why did the agent do that?"** — You can't see what prompts were sent
+- 🤷 **"Why did the agent give a wrong answer?"** — You can't see what prompts were sent at each step
 - 💸 **"How much did that cost?"** — No idea about token usage per step
-- 🐛 **"Where did it fail?"** — Buried somewhere in a chain of 10 LLM calls
-- ⏱️ **"Why is it so slow?"** — Can't pinpoint the bottleneck
+- 🐛 **"Which step failed?"** — Buried somewhere in a chain of 10 LLM calls
+- 🔄 **"Why do 4 rollouts give 4 different answers?"** — No way to compare them side-by-side
 
 You end up adding `print()` everywhere. There has to be a better way.
 
-## The Solution
+## The Solution: 2 Lines of Code
 
 ```bash
 pip install agentlife
 ```
 
-Add **2 lines** to your existing code:
-
 ```python
-import agentlife
-from openai import OpenAI
+import agentlife          # ← line 1
+agentlife.init()          # ← line 2, auto-patches OpenAI client
 
-agentlife.init()  # ← patches OpenAI client automatically
-
+# Your existing agent code — zero changes needed
 client = OpenAI()
-
 with agentlife.session("my-task"):
-    # Your existing agent code — zero changes needed
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": "Hello!"}],
     )
 ```
 
-Then open the dashboard:
-
 ```bash
-agentlife ui
-# → http://localhost:8777
+agentlife ui    # → open http://localhost:8777
 ```
 
-**That's it.** Every LLM call is now visible in an interactive call tree.
+**Every LLM call is now visible in an interactive call tree:**
+
+<div align="center">
+<img src="assets/screenshot-sessions.png" alt="AgentLife Sessions View" width="90%"/>
+<br/><sub>Session list + nested call tree — see every LLM call, tool invocation, and function in context.</sub>
+<br/><br/>
+</div>
+
+---
+
+## Who Is This For
+
+### 🛠️ Agent Developer — "My agent gives wrong answers, where did it go wrong?"
+
+The most common use case. Add `agentlife.init()` at the top, wrap your agent run in `agentlife.session()`, and open the dashboard. You'll see:
+
+- Every LLM call's **full prompt and response**
+- The complete **nested call tree** showing execution order
+- **Token count, cost, and latency** per step
+- **Errors highlighted in red** — click to inspect
+
+```python
+import agentlife
+agentlife.init()
+
+with agentlife.session("debug-my-agent"):
+    result = my_agent.run("Book a flight to Tokyo")
+    # Something went wrong? Open agentlife ui to find out exactly where.
+```
+
+<div align="center">
+<img src="assets/screenshot-detail.png" alt="Span Detail View" width="90%"/>
+<br/><sub>Click any span to see full input/output, model, tokens, cost, and errors.</sub>
+<br/><br/>
+</div>
+
+### 🔬 RL Researcher — "Compare N rollout samples side-by-side"
+
+Training agents with reinforcement learning? Use `agentlife.group()` to compare multiple rollouts of the same prompt:
+
+```python
+import agentlife
+agentlife.init()
+
+with agentlife.group("batch-001"):
+    for i in range(4):
+        with agentlife.session(f"sample-{i}", sample_index=i):
+            trajectory = agent.rollout(prompt, temperature=temperatures[i])
+```
+
+The **Groups** tab gives you:
+- **Comparison table** — tokens, cost, duration, LLM calls per sample
+- **Auto-diagnostics** — flags errors, outliers, and inconsistent outputs
+- **Aggregate statistics** — mean, std, min, max across samples
+- **Output comparison** — see final answers side-by-side
+
+<div align="center">
+<img src="assets/screenshot-groups.png" alt="Group Comparison View" width="90%"/>
+<br/><sub>N-Sample comparison with diagnostics, statistics, and output diff.</sub>
+<br/><br/>
+</div>
+
+### 💰 AI Team — "Where is the money going?"
+
+Before going to production, run your test suite through AgentLife to understand cost distribution:
+
+```python
+for query in test_queries:
+    with agentlife.session(query[:30]):
+        agent.run(query)
+
+# Then: agentlife sessions — shows cost, tokens, duration for each
+```
+
+### 🔗 Framework User — "I use LangChain/CrewAI but can't see what's happening inside"
+
+AgentLife patches the OpenAI Python SDK at runtime. If your framework uses it internally, **all LLM calls are automatically traced — zero code changes to the framework**:
+
+```python
+agentlife.init()  # That's it — works with LangChain, CrewAI, AutoGen, etc.
+```
+
+---
 
 ## Features
 
-<table>
-<tr>
-<td width="50%">
-
-### 🔌 Zero-Config Tracing
-`agentlife.init()` auto-patches the OpenAI client. Every `chat.completions.create` call is captured — model, messages, response, tokens, latency, errors. No code changes to your agent.
-
-</td>
-<td width="50%">
-
-### 🌳 Visual Call Tree
-See the full execution flow as a nested tree. LLM calls, tool invocations, and custom functions — all with parent-child relationships.
-
-</td>
-</tr>
-<tr>
-<td>
-
-### 💰 Token & Cost Tracking
-Know exactly how many tokens each call uses and what it costs. Supports 10+ models including GPT-4o, Claude, DeepSeek, GLM-4.
-
-</td>
-<td>
-
-### 🔴 Error Highlighting
-Failed spans are instantly visible in red. Click to see the full error message, input, and stack context. No more digging through logs.
-
-</td>
-</tr>
-<tr>
-<td>
-
-### 🏠 100% Local
-SQLite storage, no cloud, no accounts, no telemetry. Your data stays on your machine. Period.
-
-</td>
-<td>
-
-### 🏷️ `@trace` Decorator
-Wrap any function to add it to the call tree. Sync and async functions both supported.
-
-</td>
-</tr>
-</table>
+| Feature | Description |
+|---------|-------------|
+| **🔌 Zero-Config Tracing** | `agentlife.init()` auto-patches the OpenAI client. Every `chat.completions.create` is captured — model, messages, response, tokens, latency, errors. |
+| **🌳 Visual Call Tree** | See execution flow as a nested tree. LLM calls → tool calls → custom functions, all with parent-child relationships. |
+| **💰 Token & Cost Tracking** | Per-step token count and cost estimation. Supports GPT-4o, Claude, DeepSeek, GLM-4, and more. |
+| **📊 N-Sample Group Comparison** | `agentlife.group()` groups multiple rollouts. Compare tokens, cost, duration, outputs across samples with auto-diagnostics. |
+| **🔴 Error Highlighting** | Failed spans shown in red. Click to see full error, input context, and stack. |
+| **🏷️ `@trace` Decorator** | Wrap any function (sync or async) to add it to the call tree. |
+| **🏠 100% Local** | SQLite storage, no cloud, no accounts, no telemetry. Your data stays on your machine. |
+| **🔧 Auto-Diagnostics** | Flags: failed samples, token outliers, slow rollouts, inconsistent outputs, zero-token API failures. |
 
 ## Quick Start
 
@@ -152,43 +184,27 @@ def research(task: str) -> str:
     )
     return resp.choices[0].message.content
 
-@agentlife.trace
-def synthesize(question: str, findings: list[str]) -> str:
-    resp = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": f"Findings:\n{chr(10).join(findings)}"},
-            {"role": "user", "content": question},
-        ],
-    )
-    return resp.choices[0].message.content
-
 with agentlife.session("research-agent"):
     tasks = plan("Pros and cons of microservices?")
     results = [research(t) for t in tasks.split("\n")[:3]]
-    answer = synthesize("Pros and cons of microservices?", results)
+```
+
+### Compare N rollout samples
+
+```python
+import agentlife
+agentlife.init()
+
+with agentlife.group("experiment-1"):
+    for i in range(4):
+        with agentlife.session(f"sample-{i}", sample_index=i):
+            result = agent.run(prompt, temperature=[0.1, 0.4, 0.7, 0.95][i])
 ```
 
 ### Open the dashboard
 
 ```bash
-agentlife ui
-```
-
-You'll see something like:
-
-```
-research-agent                          2.1s  $0.008  1.2k tokens
-├── plan                                0.4s
-│   └── chat.completions.create(gpt-4o-mini)    0.3s   150 tok  $0.0001
-├── research                            0.3s
-│   └── chat.completions.create(gpt-4o-mini)    0.2s   120 tok  $0.0001
-├── research                            0.3s
-│   └── chat.completions.create(gpt-4o-mini)    0.2s   130 tok  $0.0001
-├── research                            0.3s
-│   └── chat.completions.create(gpt-4o-mini)    0.2s   110 tok  $0.0001
-└── synthesize                          0.8s
-    └── chat.completions.create(gpt-4o)         0.7s   450 tok  $0.0055
+agentlife ui    # → http://localhost:8777
 ```
 
 ## Works With Any OpenAI-Compatible API
@@ -224,20 +240,6 @@ All calls are automatically traced. No extra configuration.
 | `agentlife clear` | Delete all trace data |
 | `agentlife --version` | Show version |
 
-## Cost Estimation
-
-Built-in token cost tracking for popular models:
-
-| Model | Input ($/1M tokens) | Output ($/1M tokens) |
-|-------|---------------------|----------------------|
-| gpt-4o | $2.50 | $10.00 |
-| gpt-4o-mini | $0.15 | $0.60 |
-| gpt-4-turbo | $10.00 | $30.00 |
-| claude-3-5-sonnet | $3.00 | $15.00 |
-| claude-3-5-haiku | $0.80 | $4.00 |
-| deepseek-chat | $0.14 | $0.28 |
-| glm-4 | $1.00 | $1.00 |
-
 ## Architecture
 
 ```
@@ -250,17 +252,22 @@ agentlife.init()          ← auto-patches OpenAI client (monkey-patch)
        │
        ▼
 ┌─────────────────┐
-│  TraceCollector  │       ← in-process, thread-safe, async flush
+│  TraceCollector  │       ← in-process, thread-safe
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│     SQLite       │       ← ~/.agentlife/traces.db
+│     SQLite       │       ← ~/.agentlife/traces.db (100% local)
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
 │  agentlife ui    │       ← FastAPI + embedded SPA
+└─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│    Browser       │       ← Sessions / Groups / Detail views
 └─────────────────┘
 ```
 
@@ -269,16 +276,28 @@ agentlife.init()          ← auto-patches OpenAI client (monkey-patch)
 - [x] OpenAI auto-patcher (sync + async)
 - [x] `@trace` decorator with nested span tree
 - [x] Web dashboard with call tree + detail panel
-- [x] Token & cost tracking
+- [x] Token & cost tracking (10+ models)
 - [x] CLI (`ui`, `sessions`, `clear`)
+- [x] **N-Sample group comparison with diagnostics** ← NEW
+- [x] **Aggregate statistics (mean/std/min/max)** ← NEW
+- [x] **Auto-diagnostics (errors, outliers, inconsistency)** ← NEW
 - [ ] Streaming response support
-- [ ] httpx / requests auto-patcher
 - [ ] MCP tool call tracing
-- [ ] Session diff / comparison mode (side-by-side)
-- [ ] Export sessions as JSON
+- [ ] Export sessions as JSON / CSV
 - [ ] pytest plugin for agent regression testing
 - [ ] Cost analytics dashboard (by model / by day)
-- [ ] LangChain / LlamaIndex integration
+- [ ] LangChain / LlamaIndex native integration
+- [ ] Session replay mode
+
+## Examples
+
+| Example | Description |
+|---------|-------------|
+| [`basic_chat.py`](examples/basic_chat.py) | Simplest usage — trace a single LLM call |
+| [`multi_step_agent.py`](examples/multi_step_agent.py) | Multi-step agent with nested `@trace` |
+| [`react_agent.py`](examples/react_agent.py) | ReAct agent — multi-turn reasoning + tool calling |
+| [`react_agent_nsample.py`](examples/react_agent_nsample.py) | **N-sample rollout** — 4 rollouts with different temperatures |
+| [`demo_no_api.py`](examples/demo_no_api.py) | Mock demo — no API key needed |
 
 ## Contributing
 
