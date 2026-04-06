@@ -1,0 +1,30 @@
+name: Feature Request
+description: Suggest a new feature for AgentLife
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We'd love to hear your ideas! Please describe the feature you'd like to see.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What problem does this feature solve? Why do you need it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work? Include code examples if possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you tried any workarounds or alternative approaches?

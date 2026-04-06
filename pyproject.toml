@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentlife"
+version = "0.1.0"
+description = "See what your AI agents actually do — a local-first visual debugger for LLM-powered agents"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Max" }]
+keywords = [
+    "ai", "agent", "debugger", "observability", "tracing",
+    "llm", "openai", "langchain", "devtools", "monitoring",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.0",
+    "aiosqlite>=0.19",
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.20",
+    "click>=8.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[project.scripts]
+agentlife = "agentlife.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/Maxwell-AI-lab/agentlife"
+Repository = "https://github.com/Maxwell-AI-lab/agentlife"
+Documentation = "https://github.com/Maxwell-AI-lab/agentlife#quick-start"
+Issues = "https://github.com/Maxwell-AI-lab/agentlife/issues"
+Changelog = "https://github.com/Maxwell-AI-lab/agentlife/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentlife"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/agentlife", "README.md", "LICENSE", "CHANGELOG.md"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
