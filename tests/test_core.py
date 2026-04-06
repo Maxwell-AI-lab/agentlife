@@ -354,6 +354,88 @@ def test_traced_stream_wrapper():
     assert call_kwargs[1]["completion_tokens"] == 5
 
 
+def test_extract_output_with_tool_calls():
+    from agentlife.patchers.openai_patcher import _extract_output
+
+    mock_response = MagicMock()
+    mock_tc = MagicMock()
+    mock_tc.id = "call_abc123"
+    mock_tc.type = "function"
+    mock_tc.function.name = "get_weather"
+    mock_tc.function.arguments = '{"city": "Tokyo"}'
+
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.role = "assistant"
+    mock_response.choices[0].message.content = None
+    mock_response.choices[0].message.tool_calls = [mock_tc]
+    mock_response.choices[0].finish_reason = "tool_calls"
+
+    output = _extract_output(mock_response)
+    assert output["role"] == "assistant"
+    assert output["content"] is None
+    assert len(output["tool_calls"]) == 1
+    assert output["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert output["tool_calls"][0]["function"]["arguments"] == '{"city": "Tokyo"}'
+
+
+def test_extract_input_with_tools():
+    from agentlife.patchers.openai_patcher import _extract_input
+
+    kwargs = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "What's the weather?"}],
+        "tools": [
+            {"type": "function", "function": {"name": "get_weather", "description": "Get weather for a city"}},
+        ],
+        "tool_choice": "auto",
+    }
+    inp = _extract_input(kwargs)
+    assert inp["tool_choice"] == "auto"
+    assert len(inp["tools"]) == 1
+    assert inp["tools"][0]["name"] == "get_weather"
+
+
+def test_stream_accumulator_tool_calls():
+    from agentlife.patchers.openai_patcher import _StreamAccumulator
+
+    acc = _StreamAccumulator()
+
+    chunk1 = MagicMock()
+    chunk1.choices = [MagicMock()]
+    chunk1.choices[0].delta = MagicMock(content=None)
+    tc_delta1 = MagicMock()
+    tc_delta1.index = 0
+    tc_delta1.id = "call_xyz"
+    tc_delta1.function = MagicMock(name="get_weather", arguments='{"ci')
+    tc_delta1.function.name = "get_weather"
+    tc_delta1.function.arguments = '{"ci'
+    chunk1.choices[0].delta.tool_calls = [tc_delta1]
+    chunk1.choices[0].finish_reason = None
+    chunk1.usage = None
+
+    chunk2 = MagicMock()
+    chunk2.choices = [MagicMock()]
+    chunk2.choices[0].delta = MagicMock(content=None)
+    tc_delta2 = MagicMock()
+    tc_delta2.index = 0
+    tc_delta2.id = None
+    tc_delta2.function = MagicMock(name=None, arguments='ty":"Tokyo"}')
+    tc_delta2.function.name = None
+    tc_delta2.function.arguments = 'ty":"Tokyo"}'
+    chunk2.choices[0].delta.tool_calls = [tc_delta2]
+    chunk2.choices[0].finish_reason = "tool_calls"
+    chunk2.usage = None
+
+    acc.process_chunk(chunk1)
+    acc.process_chunk(chunk2)
+
+    output = acc.build_output()
+    assert len(output["tool_calls"]) == 1
+    assert output["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert output["tool_calls"][0]["function"]["arguments"] == '{"city":"Tokyo"}'
+    assert output["finish_reason"] == "tool_calls"
+
+
 def test_traced_stream_error():
     from agentlife.patchers.openai_patcher import _TracedStream
 

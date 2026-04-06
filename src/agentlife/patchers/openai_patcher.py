@@ -44,23 +44,58 @@ def patch_openai() -> None:
 
 
 def _extract_input(kwargs: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "messages": kwargs.get("messages"),
         "model": kwargs.get("model"),
         "temperature": kwargs.get("temperature"),
         "max_tokens": kwargs.get("max_tokens"),
         "stream": kwargs.get("stream", False),
     }
+    if kwargs.get("tools"):
+        result["tools"] = _summarize_tools(kwargs["tools"])
+    if kwargs.get("tool_choice"):
+        result["tool_choice"] = kwargs["tool_choice"]
+    return result
+
+
+def _summarize_tools(tools: list[Any]) -> list[dict]:
+    """Extract tool name + description for compact display."""
+    out = []
+    for t in tools[:20]:
+        if isinstance(t, dict):
+            fn = t.get("function", {})
+            out.append({"name": fn.get("name"), "description": fn.get("description", "")[:80]})
+        else:
+            try:
+                fn = t.function
+                out.append({"name": fn.name, "description": (fn.description or "")[:80]})
+            except AttributeError:
+                out.append({"raw": str(t)[:100]})
+    return out
 
 
 def _extract_output(response: Any) -> dict[str, Any]:
     try:
         choice = response.choices[0]
-        return {
+        result: dict[str, Any] = {
             "role": getattr(choice.message, "role", None),
             "content": getattr(choice.message, "content", None),
             "finish_reason": getattr(choice, "finish_reason", None),
         }
+        tool_calls = getattr(choice.message, "tool_calls", None)
+        if tool_calls:
+            result["tool_calls"] = [
+                {
+                    "id": getattr(tc, "id", None),
+                    "type": getattr(tc, "type", "function"),
+                    "function": {
+                        "name": getattr(tc.function, "name", None),
+                        "arguments": getattr(tc.function, "arguments", None),
+                    },
+                }
+                for tc in tool_calls
+            ]
+        return result
     except (IndexError, AttributeError):
         return {"raw": str(response)}
 
@@ -135,6 +170,69 @@ async def _wrap_async(original: Any, self: Any, *args: Any, **kwargs: Any) -> An
 # ── Streaming wrappers ──
 
 
+class _StreamAccumulator:
+    """Shared logic for accumulating streamed chunks (content + tool_calls)."""
+
+    def __init__(self) -> None:
+        self.content_parts: list[str] = []
+        self.finish_reason: str | None = None
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.tool_calls: dict[int, dict] = {}
+
+    def process_chunk(self, chunk: Any) -> None:
+        try:
+            if not chunk.choices:
+                pass
+            else:
+                delta = chunk.choices[0].delta
+
+                if hasattr(delta, "content") and delta.content:
+                    self.content_parts.append(delta.content)
+
+                tc_deltas = getattr(delta, "tool_calls", None)
+                if tc_deltas:
+                    for tc in tc_deltas:
+                        idx = getattr(tc, "index", 0)
+                        if idx not in self.tool_calls:
+                            self.tool_calls[idx] = {
+                                "id": getattr(tc, "id", None),
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        entry = self.tool_calls[idx]
+                        if tc.id:
+                            entry["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn:
+                            if getattr(fn, "name", None):
+                                entry["function"]["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                entry["function"]["arguments"] += fn.arguments
+
+                fr = getattr(chunk.choices[0], "finish_reason", None)
+                if fr:
+                    self.finish_reason = fr
+
+            usage = getattr(chunk, "usage", None)
+            if usage:
+                self.prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                self.completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+        except (IndexError, AttributeError):
+            pass
+
+    def build_output(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(self.content_parts),
+            "finish_reason": self.finish_reason or "stop",
+            "streamed": True,
+        }
+        if self.tool_calls:
+            result["tool_calls"] = [self.tool_calls[k] for k in sorted(self.tool_calls)]
+        return result
+
+
 class _TracedStream:
     """Wraps an OpenAI sync Stream to capture streamed content for tracing."""
 
@@ -142,10 +240,7 @@ class _TracedStream:
         self._stream = stream
         self._span = span
         self._collector = collector
-        self._content_parts: list[str] = []
-        self._finish_reason: str | None = None
-        self._prompt_tokens = 0
-        self._completion_tokens = 0
+        self._acc = _StreamAccumulator()
         self._finalized = False
 
     def __getattr__(self, name: str) -> Any:
@@ -157,7 +252,7 @@ class _TracedStream:
     def __next__(self) -> Any:
         try:
             chunk = next(self._stream)
-            self._process_chunk(chunk)
+            self._acc.process_chunk(chunk)
             return chunk
         except StopIteration:
             self._finalize()
@@ -176,37 +271,15 @@ class _TracedStream:
         if hasattr(self._stream, "__exit__"):
             self._stream.__exit__(*args)
 
-    def _process_chunk(self, chunk: Any) -> None:
-        try:
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, "content") and delta.content:
-                    self._content_parts.append(delta.content)
-                fr = getattr(chunk.choices[0], "finish_reason", None)
-                if fr:
-                    self._finish_reason = fr
-            usage = getattr(chunk, "usage", None)
-            if usage:
-                self._prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                self._completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-        except (IndexError, AttributeError):
-            pass
-
     def _finalize(self) -> None:
         if self._finalized:
             return
         self._finalized = True
-        content = "".join(self._content_parts)
         self._collector.end_span(
             self._span,
-            output_data={
-                "role": "assistant",
-                "content": content,
-                "finish_reason": self._finish_reason or "stop",
-                "streamed": True,
-            },
-            prompt_tokens=self._prompt_tokens,
-            completion_tokens=self._completion_tokens,
+            output_data=self._acc.build_output(),
+            prompt_tokens=self._acc.prompt_tokens,
+            completion_tokens=self._acc.completion_tokens,
         )
 
     def _finalize_error(self, error: str) -> None:
@@ -223,10 +296,7 @@ class _TracedAsyncStream:
         self._stream = stream
         self._span = span
         self._collector = collector
-        self._content_parts: list[str] = []
-        self._finish_reason: str | None = None
-        self._prompt_tokens = 0
-        self._completion_tokens = 0
+        self._acc = _StreamAccumulator()
         self._finalized = False
 
     def __getattr__(self, name: str) -> Any:
@@ -238,7 +308,7 @@ class _TracedAsyncStream:
     async def __anext__(self) -> Any:
         try:
             chunk = await self._stream.__anext__()
-            self._process_chunk(chunk)
+            self._acc.process_chunk(chunk)
             return chunk
         except StopAsyncIteration:
             self._finalize()
@@ -257,37 +327,15 @@ class _TracedAsyncStream:
         if hasattr(self._stream, "__aexit__"):
             await self._stream.__aexit__(*args)
 
-    def _process_chunk(self, chunk: Any) -> None:
-        try:
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, "content") and delta.content:
-                    self._content_parts.append(delta.content)
-                fr = getattr(chunk.choices[0], "finish_reason", None)
-                if fr:
-                    self._finish_reason = fr
-            usage = getattr(chunk, "usage", None)
-            if usage:
-                self._prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                self._completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-        except (IndexError, AttributeError):
-            pass
-
     def _finalize(self) -> None:
         if self._finalized:
             return
         self._finalized = True
-        content = "".join(self._content_parts)
         self._collector.end_span(
             self._span,
-            output_data={
-                "role": "assistant",
-                "content": content,
-                "finish_reason": self._finish_reason or "stop",
-                "streamed": True,
-            },
-            prompt_tokens=self._prompt_tokens,
-            completion_tokens=self._completion_tokens,
+            output_data=self._acc.build_output(),
+            prompt_tokens=self._acc.prompt_tokens,
+            completion_tokens=self._acc.completion_tokens,
         )
 
     def _finalize_error(self, error: str) -> None:

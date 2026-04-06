@@ -51,6 +51,12 @@ with agentlife.session("my-task"):
 agentlife ui    # → open http://localhost:8777
 ```
 
+<div align="center">
+<img src="assets/terminal-demo.png" alt="AgentLife Terminal" width="80%"/>
+<br/><sub>Run your agent, then inspect with <code>agentlife sessions</code> or <code>agentlife ui</code>.</sub>
+<br/><br/>
+</div>
+
 **Every LLM call is now visible in an interactive call tree:**
 
 <div align="center">
@@ -283,6 +289,7 @@ agentlife.init()          ← auto-patches OpenAI client (monkey-patch)
 - [x] Auto-diagnostics (errors, outliers, inconsistency)
 - [x] Streaming response support (`stream=True`)
 - [x] Export sessions as JSON (`agentlife export`)
+- [x] OpenAI Function Calling / tool_calls parsing
 - [ ] MCP tool call tracing
 - [ ] CSV export
 - [ ] pytest plugin for agent regression testing
